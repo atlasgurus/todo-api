@@ -14,8 +14,12 @@ type Datastore interface {
 	//GetTodo(int) (*Todo, error)
 
 	SaveToDo(td *Todo) error
+	UpdateToDo(td *Todo) (int64, error)
+	DeleteToDo(user uint64, taskId uint64) (int64, error)
+	GetAllTasks(userId uint64) ([]Todo, error)
 	ReadUser(username string) (user *User, err error)
 	CreateTables() error
+	CreateUser(user *NewUser) error
 }
 
 type GormDB struct {
@@ -28,9 +32,8 @@ type SqlDB struct {
 
 func (db *GormDB) CreateTables() error {
 	users := []User{
-		{Username: "Paul", Password: "password"},
-		{Username: "John", Password: "password"},
-	}
+		{NewUser: NewUser{Username: "Paul", Password: "password"}},
+		{NewUser: NewUser{Username: "Paul", Password: "password"}}}
 	result := db.Create(&users) // pass pointer of data to Create
 	return result.Error
 }
@@ -146,7 +149,48 @@ func (db *GormDB) SaveToDo(td *Todo) error {
 	return result.Error
 }
 
+func (db *GormDB) UpdateToDo(td *Todo) (int64, error) {
+	result := db.Model(&Todo{}).Where("ID = ? and userid = ?", td.ID, td.UserID).Updates(
+		Todo{NewTodo: NewTodo{Title: td.Title}})
+
+	return result.RowsAffected, result.Error
+}
+
+func (db *GormDB) GetAllTasks(userId uint64) ([]Todo, error) {
+	todos := []Todo{}
+	result := db.Where("userid = ?", userId).Find(&todos)
+	return todos, result.Error
+}
+
+func (db *SqlDB) GetAllTasks(userId uint64) ([]Todo, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (db *GormDB) DeleteToDo(userId uint64, taskId uint64) (int64, error) {
+	result := db.Where("ID = ? and userid = ?", taskId, userId).Delete(&Todo{})
+
+	return result.RowsAffected, result.Error
+}
+
+func (db *SqlDB) DeleteToDo(userId uint64, taskId uint64) (int64, error) {
+	return 0, fmt.Errorf("not implemented")
+}
+
 func (db *SqlDB) SaveToDo(td *Todo) error {
 	_, err := db.Query("INSERT INTO todos (userid, title) VALUES ($1, $2);", td.UserID, td.Title)
 	return err
+}
+
+func (db *SqlDB) UpdateToDo(td *Todo) (int64, error) {
+	return 0, fmt.Errorf("not implemented")
+}
+
+func (db *SqlDB) CreateUser(user *NewUser) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (db *GormDB) CreateUser(user *NewUser) error {
+	u := User{NewUser: *user}
+	result := db.Create(&u)
+	return result.Error
 }

@@ -23,12 +23,12 @@ type TokenDetails struct {
 }
 
 type Auth struct {
-	config *config.RedisConfig
+	config *config.AuthConfig
 	client *redis.Client
 	//db     models.Datastore
 }
 
-func CreateAuthenticator(config *config.RedisConfig) (*Auth, error) {
+func CreateAuthenticator(config *config.AuthConfig) (*Auth, error) {
 	result := &Auth{config: config}
 	return result, result.initRedis()
 }
@@ -36,15 +36,15 @@ func CreateAuthenticator(config *config.RedisConfig) (*Auth, error) {
 func (auth *Auth) initRedis() error {
 	//Initializing redis
 	auth.client = redis.NewClient(&redis.Options{
-		Addr: auth.config.Dsn, //redis port
+		Addr: auth.config.RedisDsn, //redis port
 	})
 	_, err := auth.client.Ping().Result()
 	return err
 }
 
-func CreateToken(userid uint64) (*TokenDetails, error) {
+func (auth *Auth) CreateToken(userid uint64) (*TokenDetails, error) {
 	td := &TokenDetails{}
-	td.AtExpires = time.Now().Add(time.Minute * 15).Unix()
+	td.AtExpires = time.Now().Add(time.Minute * auth.config.AccessTokenTTL).Unix()
 	td.AccessUuid = uuid.NewV4().String()
 
 	td.RtExpires = time.Now().Add(time.Hour * 24 * 7).Unix()
@@ -52,7 +52,6 @@ func CreateToken(userid uint64) (*TokenDetails, error) {
 
 	var err error
 	//Creating Access Token
-	os.Setenv("ACCESS_SECRET", "jdnfksdmfksd") //this should be in an env file
 	atClaims := jwt.MapClaims{}
 	atClaims["authorized"] = true
 	atClaims["access_uuid"] = td.AccessUuid
@@ -64,7 +63,6 @@ func CreateToken(userid uint64) (*TokenDetails, error) {
 		return nil, err
 	}
 	//Creating Refresh Token
-	os.Setenv("REFRESH_SECRET", "mcmvmkmsdnfsdmfdsjf") //this should be in an env file
 	rtClaims := jwt.MapClaims{}
 	rtClaims["refresh_uuid"] = td.RefreshUuid
 	rtClaims["user_id"] = userid
@@ -110,6 +108,7 @@ func verifyToken(r *http.Request) (*jwt.Token, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
+		//return []byte(os.Getenv("ACCESS_SECRET")), nil
 		return []byte(os.Getenv("ACCESS_SECRET")), nil
 	})
 	if err != nil {

@@ -2,15 +2,18 @@ package config
 
 import (
 	"os"
+	"time"
 )
 
 type Config struct {
-	RedisConfig *RedisConfig
-	DBConfig    *DBConfig
+	AuthConfig *AuthConfig
+	DBConfig   *DBConfig
 }
 
-type RedisConfig struct {
-	Dsn string
+type AuthConfig struct {
+	RedisDsn        string
+	AccessTokenTTL  time.Duration
+	RefreshTokenTTL time.Duration
 }
 
 type DBConfig struct {
@@ -32,8 +35,13 @@ func getenv(key, fallback string) string {
 }
 
 func GetConf() *Config {
+	os.Setenv("ACCESS_SECRET", "jdnfksdmfksd")         //this should be in an env file
+	os.Setenv("REFRESH_SECRET", "mcmvmkmsdnfsdmfdsjf") //this should be in an env file
 	return &Config{
-		RedisConfig: &RedisConfig{Dsn: getenv("REDIS_DSN", "localhost:6379")},
+		AuthConfig: &AuthConfig{
+			RedisDsn:        getenv("REDIS_DSN", "localhost:6379"),
+			AccessTokenTTL:  15 * 60,
+			RefreshTokenTTL: 60 * 24},
 		DBConfig: &DBConfig{
 			Impl:     getenv("TODO_DB_IMPL", "gorm"),
 			Dialect:  getenv("TODO_DB_DIALECT", "postgres"),

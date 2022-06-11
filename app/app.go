@@ -10,6 +10,7 @@ import (
 	_ "github.com/twinj/uuid"
 	"log"
 	"net/http"
+	"strconv"
 )
 
 type App struct {
@@ -20,7 +21,7 @@ type App struct {
 }
 
 func (app *App) Start(config *config.Config) {
-	auth, err := authentication.CreateAuthenticator(config.RedisConfig)
+	auth, err := authentication.CreateAuthenticator(config.AuthConfig)
 	if err != nil {
 		panic(err)
 	}
@@ -38,9 +39,13 @@ func (app *App) run(addr string) {
 }
 
 func (app *App) initRouters() {
+	app.router.POST("/register", app.Register)
 	app.router.POST("/login", app.Login)
 	app.router.POST("/migrate", app.CreateTables)
-	app.router.POST("/todo", TokenAuthMiddleware(), app.CreateTodo)
+	app.router.POST("/add-task", TokenAuthMiddleware(), app.CreateTodo)
+	app.router.PUT("/update-task/:task-id", TokenAuthMiddleware(), app.UpdateTodo)
+	app.router.DELETE("/delete-task/:task-id", TokenAuthMiddleware(), app.DeleteTodo)
+	app.router.GET("/list-tasks", TokenAuthMiddleware(), app.GetAllTasks)
 	app.router.POST("/logout", TokenAuthMiddleware(), app.Logout)
 }
 
@@ -53,7 +58,7 @@ func (app *App) Login(c *gin.Context) {
 
 	db, err := models.ConnectDS(app.config.DBConfig)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, "invalid json")
+		c.Status(http.StatusInternalServerError)
 		return
 	}
 	user, err := db.ReadUser(u.Username)
@@ -68,7 +73,7 @@ func (app *App) Login(c *gin.Context) {
 		return
 	}
 
-	ts, err := authentication.CreateToken(user.ID)
+	ts, err := app.auth.CreateToken(user.ID)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, err.Error())
 		return
@@ -84,9 +89,55 @@ func (app *App) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, tokens)
 }
 
+func (app *App) UpdateTodo(c *gin.Context) {
+	var ntd *models.NewTodo
+	if err := c.ShouldBindJSON(&ntd); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, "invalid json")
+		return
+	}
+	taskIdStr := c.Param("task-id")
+	taskId, err := strconv.ParseUint(taskIdStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, "no valid task-id")
+		return
+	}
+	tokenAuth, err := authentication.ExtractTokenMetadata(c.Request)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	userId, err := app.auth.FetchAuth(tokenAuth)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	db, err := models.ConnectDS(app.config.DBConfig)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	td := models.Todo{ID: taskId, NewTodo: *ntd, UserID: userId}
+
+	rows, err := db.UpdateToDo(&td)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	switch rows {
+	case 0:
+		c.JSON(http.StatusNotFound, "task not found")
+	case 1:
+		c.Status(http.StatusCreated)
+	default:
+		panic("should not happen")
+	}
+}
+
 func (app *App) CreateTodo(c *gin.Context) {
-	var td *models.Todo
-	if err := c.ShouldBindJSON(&td); err != nil {
+	var ntd *models.NewTodo
+	if err := c.ShouldBindJSON(&ntd); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, "invalid json")
 		return
 	}
@@ -100,23 +151,24 @@ func (app *App) CreateTodo(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	td.UserID = userId
+
+	td := models.Todo{NewTodo: *ntd, UserID: userId}
 
 	db, err := models.ConnectDS(app.config.DBConfig)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, "unable to connect to the DB")
+		c.Status(http.StatusInternalServerError)
 		return
 	}
 
-	err = db.SaveToDo(td)
+	err = db.SaveToDo(&td)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, "unable to save todo to the DB")
+		c.Status(http.StatusInternalServerError)
 		return
 	}
 
-	//you can proceed to save the Todo to a database
-	//but we will just return it to the caller here:
-	c.JSON(http.StatusCreated, td)
+	response := gin.H{"task-id": td.ID}
+
+	c.JSON(http.StatusCreated, response)
 }
 
 func (app *App) Logout(c *gin.Context) {
@@ -136,16 +188,102 @@ func (app *App) Logout(c *gin.Context) {
 func (app *App) CreateTables(c *gin.Context) {
 	ds, err := models.ConnectDS(app.config.DBConfig)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, "unable to connect to the DB")
+		c.Status(http.StatusInternalServerError)
 		return
 	}
 
 	err = ds.CreateTables()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, "unable to create tables")
+		c.Status(http.StatusInternalServerError)
 		return
 	}
 	c.JSON(http.StatusOK, "Successfully initialized DB tables")
+}
+
+func (app *App) Register(c *gin.Context) {
+	var u models.NewUser
+	if err := c.ShouldBindJSON(&u); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, "Invalid json provided")
+		return
+	}
+
+	db, err := models.ConnectDS(app.config.DBConfig)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	err = db.CreateUser(&u)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	c.JSON(http.StatusOK, "User created successfully")
+}
+
+func (app *App) GetAllTasks(c *gin.Context) {
+	tokenAuth, err := authentication.ExtractTokenMetadata(c.Request)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	userId, err := app.auth.FetchAuth(tokenAuth)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	db, err := models.ConnectDS(app.config.DBConfig)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	tasks, err := db.GetAllTasks(userId)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	c.JSON(http.StatusOK, tasks)
+}
+
+func (app *App) DeleteTodo(c *gin.Context) {
+	taskIdStr := c.Param("task-id")
+	taskId, err := strconv.ParseUint(taskIdStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusUnprocessableEntity, "no valid task-id")
+		return
+	}
+	tokenAuth, err := authentication.ExtractTokenMetadata(c.Request)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	userId, err := app.auth.FetchAuth(tokenAuth)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	db, err := models.ConnectDS(app.config.DBConfig)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	rows, err := db.DeleteToDo(userId, taskId)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+	switch rows {
+	case 0:
+		c.JSON(http.StatusNotFound, "task not found")
+	case 1:
+		c.Status(http.StatusCreated)
+	default:
+		panic("should not happen")
+	}
 }
 
 func TokenAuthMiddleware() gin.HandlerFunc {
