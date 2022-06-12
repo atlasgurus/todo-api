@@ -1,7 +1,9 @@
 package app
 
 import (
+	"crypto/tls"
 	"github.com/gin-gonic/gin"
+	"github.com/go-gomail/gomail"
 	_ "github.com/go-redis/redis/v7"
 	_ "github.com/lib/pq"
 	"github.com/tintash-training/todo-api/app/authentication"
@@ -171,7 +173,7 @@ func (app *App) AssignTodo(c *gin.Context) {
 		// User not registered.  Create a temporary registration and notify the user by email.
 		Pending := true
 		newUser := &models.NewUser{Email: atd.Email, Pending: &Pending}
-		// TODO: consider adding a 'pending' attribute to the user
+
 		err = db.CreateUser(newUser)
 		if err != nil {
 			c.Status(http.StatusInternalServerError)
@@ -179,6 +181,13 @@ func (app *App) AssignTodo(c *gin.Context) {
 		}
 		user, err = db.ReadUser(atd.Email)
 		if err != nil {
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+
+		err = app.sendRegistrationEmail(atd)
+		if err != nil {
+			// TODO this failed request will have a side effect of having created a user.  Roll it back?
 			c.Status(http.StatusInternalServerError)
 			return
 		}
@@ -364,6 +373,33 @@ func (app *App) DeleteTodo(c *gin.Context) {
 	default:
 		panic("should not happen")
 	}
+}
+
+func (app *App) sendRegistrationEmail(atd *models.AssignedTodo) error {
+	m := gomail.NewMessage()
+
+	// Set E-Mail sender
+	m.SetHeader("From", "from@gmail.com")
+
+	// Set E-Mail receivers
+	m.SetHeader("To", "to@example.com")
+
+	// Set E-Mail subject
+	m.SetHeader("Subject", "A task has been assigned to you")
+
+	// Set E-Mail body. You can set plain text or html with text/html
+	m.SetBody("text/plain", atd.Title)
+
+	// Settings for SMTP server
+	d := gomail.NewDialer("smtp.gmail.com", 587, "from@gmail.com", "<email_password>")
+
+	// This is only needed when SSL/TLS certificate is not valid on server.
+	// In production this should be set to false.
+	d.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+
+	// Now send E-Mail
+	err := d.DialAndSend(m)
+	return err
 }
 
 func TokenAuthMiddleware() gin.HandlerFunc {
