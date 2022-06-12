@@ -6,6 +6,7 @@ import (
 	"github.com/tintash-training/todo-api/app/config"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"strings"
 )
 
 type Datastore interface {
@@ -17,9 +18,10 @@ type Datastore interface {
 	UpdateToDo(td *Todo) (int64, error)
 	DeleteToDo(user uint64, taskId uint64) (int64, error)
 	GetAllTasks(userId uint64) ([]Todo, error)
-	ReadUser(username string) (user *User, err error)
+	ReadUser(email string) (user *User, err error)
 	CreateTables() error
 	CreateUser(user *NewUser) error
+	UpdateUser(user *NewUser) error
 }
 
 type GormDB struct {
@@ -32,32 +34,38 @@ type SqlDB struct {
 
 func (db *GormDB) CreateTables() error {
 	users := []User{
-		{NewUser: NewUser{Username: "Paul", Password: "password"}},
-		{NewUser: NewUser{Username: "Paul", Password: "password"}}}
+		{NewUser: NewUser{Email: "bob.smith@gmail.com", FirstName: "Bob", LastName: "Smith", Password: "password"}},
+		{NewUser: NewUser{Email: "john.doe@gmail.com", FirstName: "John", LastName: "Doe", Password: "password"}}}
 	result := db.Create(&users) // pass pointer of data to Create
+
 	return result.Error
 }
 
 // ReadUser database/sql implementation
-func (db *SqlDB) ReadUser(username string) (user *User, err error) {
+func (db *SqlDB) ReadUser(email string) (user *User, err error) {
 	user = &User{}
-	query := fmt.Sprintf("SELECT * FROM users WHERE username = '%s'", username)
+	query := fmt.Sprintf("SELECT * FROM users WHERE email = '%s'", strings.ToLower(email))
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
 	}
 
 	if rows.Next() {
-		err = rows.Scan(&user.ID, &user.Username, &user.Password)
+		err = rows.Scan(&user.ID, &user.Email, &user.Password)
+	} else {
+		user = nil
 	}
 	return
 }
 
 // ReadUser gorm implementation
-func (db *GormDB) ReadUser(username string) (user *User, err error) {
+func (db *GormDB) ReadUser(email string) (user *User, err error) {
 	user = &User{}
-	result := db.First(user, "username = ?", username)
+	result := db.Where("email = ?", strings.ToLower(email)).Limit(1).Find(user)
 	err = result.Error
+	if result.RowsAffected != 1 {
+		user = nil
+	}
 	return
 }
 
@@ -110,7 +118,7 @@ func (db *SqlDB) CreateTables() error {
 		DROP TABLE IF EXISTS users;
 		CREATE TABLE users (
 		    id SERIAL PRIMARY KEY,
-   			username varchar,
+   			email varchar,
    			password varchar
 		); `
 	_, err := db.Query(query)
@@ -119,8 +127,8 @@ func (db *SqlDB) CreateTables() error {
 	}
 
 	query = `
-		INSERT INTO users (username, password) VALUES ( 'Paul', 'password');
-		INSERT INTO users (username, password) VALUES ( 'John', 'password'); `
+		INSERT INTO users (email, password) VALUES ( 'paul.smith@gmail.com', 'password');
+		INSERT INTO users (email, password) VALUES ( 'john.doe@gmail.com', 'password'); `
 
 	_, err = db.Query(query)
 	if err != nil {
@@ -189,8 +197,23 @@ func (db *SqlDB) CreateUser(user *NewUser) error {
 	return fmt.Errorf("not implemented")
 }
 
+func (db *SqlDB) UpdateUser(user *NewUser) error {
+	return fmt.Errorf("not implemented")
+}
+
 func (db *GormDB) CreateUser(user *NewUser) error {
 	u := User{NewUser: *user}
+	u.Email = strings.ToLower(u.Email)
 	result := db.Create(&u)
+	return result.Error
+}
+
+func (db *GormDB) UpdateUser(user *NewUser) error {
+	u := User{NewUser: *user}
+	u.Email = strings.ToLower(u.Email)
+	Pending := false
+	// Workaround: gorm doesn't update boolean fields with false value.  Use a pointer to boolean
+	u.Pending = &Pending
+	result := db.Where("email = ?", strings.ToLower(u.Email)).Updates(&u)
 	return result.Error
 }

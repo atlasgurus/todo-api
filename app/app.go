@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 type App struct {
@@ -43,6 +44,7 @@ func (app *App) initRouters() {
 	app.router.POST("/login", app.Login)
 	app.router.POST("/migrate", app.CreateTables)
 	app.router.POST("/add-task", TokenAuthMiddleware(), app.CreateTodo)
+	app.router.POST("/assign-task", TokenAuthMiddleware(), app.AssignTodo)
 	app.router.PUT("/update-task/:task-id", TokenAuthMiddleware(), app.UpdateTodo)
 	app.router.DELETE("/delete-task/:task-id", TokenAuthMiddleware(), app.DeleteTodo)
 	app.router.GET("/list-tasks", TokenAuthMiddleware(), app.GetAllTasks)
@@ -61,14 +63,14 @@ func (app *App) Login(c *gin.Context) {
 		c.Status(http.StatusInternalServerError)
 		return
 	}
-	user, err := db.ReadUser(u.Username)
+	user, err := db.ReadUser(u.Email)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, "Please provide valid login details")
 		return
 	}
 
 	//compare the user from the request, with the one we defined:
-	if user.Username != u.Username || user.Password != u.Password {
+	if strings.ToLower(u.Email) != user.Email || u.Password != user.Password {
 		c.JSON(http.StatusUnauthorized, "Please provide valid login details")
 		return
 	}
@@ -133,6 +135,66 @@ func (app *App) UpdateTodo(c *gin.Context) {
 	default:
 		panic("should not happen")
 	}
+}
+
+func (app *App) AssignTodo(c *gin.Context) {
+	var atd *models.AssignedTodo
+	if err := c.ShouldBindJSON(&atd); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, "invalid json")
+		return
+	}
+	tokenAuth, err := authentication.ExtractTokenMetadata(c.Request)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	_, err = app.auth.FetchAuth(tokenAuth)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	db, err := models.ConnectDS(app.config.DBConfig)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	// Lookup the user by email
+	user, err := db.ReadUser(atd.Email)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	if user == nil {
+		// User not registered.  Create a temporary registration and notify the user by email.
+		Pending := true
+		newUser := &models.NewUser{Email: atd.Email, Pending: &Pending}
+		// TODO: consider adding a 'pending' attribute to the user
+		err = db.CreateUser(newUser)
+		if err != nil {
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+		user, err = db.ReadUser(atd.Email)
+		if err != nil {
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+	}
+
+	td := models.Todo{NewTodo: atd.NewTodo, UserID: user.ID}
+
+	err = db.SaveToDo(&td)
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return
+	}
+
+	response := gin.H{"task-id": td.ID}
+
+	c.JSON(http.StatusCreated, response)
 }
 
 func (app *App) CreateTodo(c *gin.Context) {
@@ -212,13 +274,31 @@ func (app *App) Register(c *gin.Context) {
 		c.Status(http.StatusInternalServerError)
 		return
 	}
-	err = db.CreateUser(&u)
+	user, err := db.ReadUser(u.Email)
 	if err != nil {
 		c.Status(http.StatusInternalServerError)
 		return
 	}
 
-	c.JSON(http.StatusOK, "User created successfully")
+	if user == nil {
+		// This is a brand new user
+		err = db.CreateUser(&u)
+		if err != nil {
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+		c.JSON(http.StatusOK, "User created successfully")
+	} else if *user.Pending {
+		err = db.UpdateUser(&u)
+		if err != nil {
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+		c.JSON(http.StatusOK, "User created successfully")
+	} else {
+		c.JSON(http.StatusConflict, "User already exists")
+	}
+
 }
 
 func (app *App) GetAllTasks(c *gin.Context) {
