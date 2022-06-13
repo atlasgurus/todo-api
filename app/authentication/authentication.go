@@ -128,7 +128,7 @@ func TokenValid(r *http.Request) error {
 	return nil
 }
 
-func ExtractTokenMetadata(r *http.Request) (*AccessDetails, error) {
+func extractTokenMetadata(r *http.Request) (*AccessDetails, error) {
 	token, err := verifyToken(r)
 	if err != nil {
 		return nil, err
@@ -156,7 +156,7 @@ type AccessDetails struct {
 	UserId     uint64
 }
 
-func (auth *Auth) FetchAuth(authD *AccessDetails) (uint64, error) {
+func (auth *Auth) fetchAuth(authD *AccessDetails) (uint64, error) {
 	userid, err := auth.client.Get(authD.AccessUuid).Result()
 	if err != nil {
 		return 0, err
@@ -165,10 +165,24 @@ func (auth *Auth) FetchAuth(authD *AccessDetails) (uint64, error) {
 	return userID, nil
 }
 
-func (auth *Auth) DeleteAuth(givenUuid string) (int64, error) {
-	deleted, err := auth.client.Del(givenUuid).Result()
+func (auth *Auth) deleteAuth(givenUuid string) error {
+	_, err := auth.client.Del(givenUuid).Result()
+	return err
+}
+
+func (auth *Auth) ExtractAndDelAuth(r *http.Request) (err error) {
+	au, err := extractTokenMetadata(r)
 	if err != nil {
-		return 0, err
+		return
 	}
-	return deleted, nil
+	return auth.deleteAuth(au.AccessUuid)
+}
+
+func (auth *Auth) ExtractAndFetchAuth(r *http.Request) (userId uint64, err error) {
+	tokenAuth, err := extractTokenMetadata(r)
+	if err != nil {
+		return
+	}
+	_, err = auth.fetchAuth(tokenAuth)
+	return
 }

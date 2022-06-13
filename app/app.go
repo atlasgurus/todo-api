@@ -5,12 +5,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-gomail/gomail"
 	_ "github.com/go-redis/redis/v7"
+	"github.com/golang/glog"
 	_ "github.com/lib/pq"
 	"github.com/tintash-training/todo-api/app/authentication"
 	"github.com/tintash-training/todo-api/app/config"
 	"github.com/tintash-training/todo-api/app/models"
 	_ "github.com/twinj/uuid"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -38,7 +38,7 @@ func (app *App) Start(config *config.Config) {
 }
 
 func (app *App) run(addr string) {
-	log.Fatal(app.router.Run(addr))
+	glog.Fatal(app.router.Run(addr))
 }
 
 func (app *App) initRouters() {
@@ -105,12 +105,7 @@ func (app *App) UpdateTodo(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, "no valid task-id")
 		return
 	}
-	tokenAuth, err := authentication.ExtractTokenMetadata(c.Request)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	userId, err := app.auth.FetchAuth(tokenAuth)
+	userId, err := app.auth.ExtractAndFetchAuth(c.Request)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, "unauthorized")
 		return
@@ -135,7 +130,8 @@ func (app *App) UpdateTodo(c *gin.Context) {
 	case 1:
 		c.Status(http.StatusCreated)
 	default:
-		panic("should not happen")
+		c.Status(http.StatusInternalServerError)
+		glog.Error("should not happen")
 	}
 }
 
@@ -145,12 +141,8 @@ func (app *App) AssignTodo(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, "invalid json")
 		return
 	}
-	tokenAuth, err := authentication.ExtractTokenMetadata(c.Request)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	_, err = app.auth.FetchAuth(tokenAuth)
+
+	_, err := app.auth.ExtractAndFetchAuth(c.Request)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, "unauthorized")
 		return
@@ -180,14 +172,18 @@ func (app *App) AssignTodo(c *gin.Context) {
 			return
 		}
 		user, err = db.ReadUser(atd.Email)
-		if err != nil {
+		if err != nil || user == nil {
+			// User was created above and must be found here.
 			c.Status(http.StatusInternalServerError)
 			return
 		}
+	}
 
+	if *user.Pending {
 		err = app.sendRegistrationEmail(atd)
 		if err != nil {
-			// TODO this failed request will have a side effect of having created a user.  Roll it back?
+			// TODO we have created a user but have not been able to send the email.
+			glog.Error("Error sending email:", err)
 			c.Status(http.StatusInternalServerError)
 			return
 		}
@@ -212,12 +208,8 @@ func (app *App) CreateTodo(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, "invalid json")
 		return
 	}
-	tokenAuth, err := authentication.ExtractTokenMetadata(c.Request)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	userId, err := app.auth.FetchAuth(tokenAuth)
+
+	userId, err := app.auth.ExtractAndFetchAuth(c.Request)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, "unauthorized")
 		return
@@ -243,13 +235,8 @@ func (app *App) CreateTodo(c *gin.Context) {
 }
 
 func (app *App) Logout(c *gin.Context) {
-	au, err := authentication.ExtractTokenMetadata(c.Request)
+	err := app.auth.ExtractAndDelAuth(c.Request)
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	deleted, delErr := app.auth.DeleteAuth(au.AccessUuid)
-	if delErr != nil || deleted == 0 { //if any goes wrong
 		c.JSON(http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -311,12 +298,7 @@ func (app *App) Register(c *gin.Context) {
 }
 
 func (app *App) GetAllTasks(c *gin.Context) {
-	tokenAuth, err := authentication.ExtractTokenMetadata(c.Request)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	userId, err := app.auth.FetchAuth(tokenAuth)
+	userId, err := app.auth.ExtractAndFetchAuth(c.Request)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, "unauthorized")
 		return
@@ -343,12 +325,7 @@ func (app *App) DeleteTodo(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, "no valid task-id")
 		return
 	}
-	tokenAuth, err := authentication.ExtractTokenMetadata(c.Request)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	userId, err := app.auth.FetchAuth(tokenAuth)
+	userId, err := app.auth.ExtractAndFetchAuth(c.Request)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, "unauthorized")
 		return
@@ -379,23 +356,27 @@ func (app *App) sendRegistrationEmail(atd *models.AssignedTodo) error {
 	m := gomail.NewMessage()
 
 	// Set E-Mail sender
-	m.SetHeader("From", "from@gmail.com")
+	m.SetHeader("From", app.config.SMTPConfig.DoNotReplyEmail)
 
 	// Set E-Mail receivers
-	m.SetHeader("To", "to@example.com")
+	m.SetHeader("To", atd.Email)
 
 	// Set E-Mail subject
-	m.SetHeader("Subject", "A task has been assigned to you")
+	m.SetHeader("Subject", "A task has been assigned to you.")
 
 	// Set E-Mail body. You can set plain text or html with text/html
 	m.SetBody("text/plain", atd.Title)
 
 	// Settings for SMTP server
-	d := gomail.NewDialer("smtp.gmail.com", 587, "from@gmail.com", "<email_password>")
+	d := gomail.NewDialer(
+		app.config.SMTPConfig.Host,
+		app.config.SMTPConfig.Port,
+		app.config.SMTPConfig.Username,
+		app.config.SMTPConfig.Password)
 
 	// This is only needed when SSL/TLS certificate is not valid on server.
 	// In production this should be set to false.
-	d.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	d.TLSConfig = &tls.Config{InsecureSkipVerify: app.config.SMTPConfig.InsecureSkipVerify}
 
 	// Now send E-Mail
 	err := d.DialAndSend(m)

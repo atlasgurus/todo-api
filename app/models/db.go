@@ -70,7 +70,7 @@ func (db *GormDB) ReadUser(email string) (user *User, err error) {
 }
 
 func makeDataSourceName(config *config.DBConfig) string {
-	return fmt.Sprintf("host=%s user=%s dbname=%s sslmode=%s port=%s password=%s",
+	return fmt.Sprintf("host=%s user=%s dbname=%s sslmode=%s port=%d password=%s",
 		config.Host,
 		config.Username,
 		config.Name,

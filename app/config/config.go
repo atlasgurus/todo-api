@@ -2,12 +2,14 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"time"
 )
 
 type Config struct {
 	AuthConfig *AuthConfig
 	DBConfig   *DBConfig
+	SMTPConfig *SMTPConfig
 }
 
 type AuthConfig struct {
@@ -23,13 +25,32 @@ type DBConfig struct {
 	Username string
 	Password string
 	Host     string
-	Port     string
+	Port     int
 	SSLMode  string
+}
+
+type SMTPConfig struct {
+	Host               string
+	Port               int
+	Username           string
+	Password           string
+	DoNotReplyEmail    string
+	InsecureSkipVerify bool
 }
 
 func getenv(key, fallback string) string {
 	if value := os.Getenv(key); len(value) != 0 {
 		return value
+	}
+	return fallback
+}
+
+func getenvInt(key string, fallback int) int {
+	if value := os.Getenv(key); len(value) != 0 {
+		result, err := strconv.Atoi(value)
+		if err == nil {
+			return result
+		}
 	}
 	return fallback
 }
@@ -49,8 +70,16 @@ func GetConf() *Config {
 			Username: getenv("TODO_DB_USERNAME", "postgres"),
 			Password: getenv("TODO_DB_PASSWORD", "password"),
 			Host:     getenv("TODO_DB_HOST", "localhost"),
-			Port:     getenv("TODO_DB_PORT", "55000"),
+			Port:     getenvInt("TODO_DB_PORT", 55000),
 			SSLMode:  getenv("TODO_DB_SSLMODE", "disable"),
+		},
+		SMTPConfig: &SMTPConfig{
+			Username:           getenv("TODO_SMTP_USERNAME", "test@google.com"),
+			Password:           getenv("TODO_SMTP_PASSWORD", "password"),
+			Host:               getenv("TODO_SMTP_HOST", "smtp.freesmtpservers.com"),
+			DoNotReplyEmail:    "donotreply@gmail.com",
+			Port:               getenvInt("TODO_SMTP_PORT", 25),
+			InsecureSkipVerify: false,
 		},
 	}
 }
